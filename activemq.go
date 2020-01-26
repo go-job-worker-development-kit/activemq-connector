@@ -2,41 +2,81 @@ package activemq
 
 import (
 	"context"
-	"database/sql"
+	"crypto/tls"
+	"errors"
 	"fmt"
+	"sync"
+
+	"github.com/vvatanabe/goretryer/exponential"
+
 	"github.com/go-job-worker-development-kit/activemq-connector/internal"
 	"github.com/go-job-worker-development-kit/jobworker"
 	"github.com/go-stomp/stomp"
 	"github.com/go-stomp/stomp/frame"
-	uuid "github.com/satori/go.uuid"
-	"sync"
 )
 
 const connName = "activemq"
 
 type Setting struct {
-	Network  string
-	Addr string
+	Network       string
+	Addr          string
+	Config        *tls.Config // tls only
+	Opts          []func(*stomp.Conn) error
+	AckMode       stomp.AckMode
+	Persistent    bool
+	NumMaxRetries int
+}
+
+func Open(s *Setting) (*Connector, error) {
+	conn, err := dial(s.Network, s.Addr, s.Config, s.Opts...)
+	if err != nil {
+		return nil, err
+	}
+	var er exponential.Retryer
+	if s.NumMaxRetries != 0 {
+		er.NumMaxRetries = s.NumMaxRetries
+	}
+	return &Connector{
+		name:    connName,
+		setting: s,
+		retryer: er,
+		conn:    conn,
+	}, nil
 
 }
 
-func Open(conn *stomp.Conn, ackMode stomp.AckMode) *Connector {
-	return &Connector{
-		name:connName,
-		conn:conn,
-		ackMode:ackMode,
+func dial(network string, addr string, config *tls.Config, opts ...func(*stomp.Conn) error) (*stomp.Conn, error) {
+	var conn *stomp.Conn
+	if config != nil {
+		stompConn, err := stomp.Dial(network, addr, opts...)
+		if err != nil {
+			return nil, err
+		}
+		conn = stompConn
+	} else {
+		netConn, err := tls.Dial(network, addr, config)
+		if err != nil {
+			return nil, err
+		}
+		stompConn, err := stomp.Connect(netConn, opts...)
+		if err != nil {
+			_ = netConn.Close()
+			return nil, err
+		}
+		conn = stompConn
 	}
-
+	return conn, nil
 }
 
 type Connector struct {
-	name       string
-	ackMode stomp.AckMode
+	name    string
+	setting *Setting
+
+	retryer exponential.Retryer
 
 	conn *stomp.Conn
 
-	activeMsgs sync.Map
-	name2destination sync.Map
+	name2Queue sync.Map
 
 	loggerFunc jobworker.LoggerFunc
 }
@@ -50,23 +90,20 @@ func (c *Connector) GetName() string {
 }
 
 func (c *Connector) resolveQueue(ctx context.Context, name string) (*internal.Queue, error) {
-	queue, ok := c.name2destination.Load(name)
+	queue, ok := c.name2Queue.Load(name)
 	if !ok || queue == nil {
-		s, err := c.conn.Subscribe(name, c.ackMode)
+		s, err := c.conn.Subscribe(name, c.setting.AckMode)
 		if err != nil {
 			return nil, err
 		}
-		queue = &internal.Queue{Name:name, Subscription:s}
-		c.name2destination.Store(name, queue)
+		queue = &internal.Queue{Name: name, Subscription: s}
+		c.name2Queue.Store(name, queue)
 	}
 
 	return queue.(*internal.Queue), nil
 }
 
 func newJob(queue *internal.Queue, msg *stomp.Message, conn jobworker.Connector) *jobworker.Job {
-	id := uuid.NewV4().String()
-	class := msg.Header.Get("type")
-	args := string(msg.Body)
 	metadata := make(map[string]string, msg.Header.Len())
 	for i := 0; i < len(metadata); i++ {
 		k, v := msg.Header.GetAt(i)
@@ -74,26 +111,15 @@ func newJob(queue *internal.Queue, msg *stomp.Message, conn jobworker.Connector)
 	}
 	job := jobworker.NewJob(
 		queue.Name,
-		id,
-		class,
-		args,
+		string(msg.Body),
 		metadata,
 		conn,
-		)
+		msg,
+	)
 	return job
 }
 
-func (c *Connector) ReceiveJobs(ctx context.Context, ch chan<- *jobworker.Job, input *jobworker.ReceiveJobsInput, opts ...func(*jobworker.Option)) (*jobworker.ReceiveJobsOutput, error) {
-	queue, err := c.resolveQueue(ctx, input.Queue)
-	if err != nil {
-		return nil, err
-	}
-
-	msg, err := queue.Subscription.Read()
-	if err != nil {
-		return nil, err
-	}
-
+func printMsg(msg *stomp.Message) {
 	fmt.Println("# ----------")
 
 	for i := 0; i < msg.Header.Len(); i++ {
@@ -114,50 +140,91 @@ func (c *Connector) ReceiveJobs(ctx context.Context, ch chan<- *jobworker.Job, i
 	fmt.Println("Destination :", msg.Destination)
 
 	fmt.Println("# ----------")
+}
 
+func (c *Connector) ReceiveJobs(ctx context.Context, ch chan<- *jobworker.Job, quit <-chan struct{}, input *jobworker.ReceiveJobsInput, opts ...func(*jobworker.Option)) (*jobworker.ReceiveJobsOutput, error) {
+	queue, err := c.resolveQueue(ctx, input.Queue)
+	if err != nil {
+		return nil, err
+	}
 
-	job := newJob(queue, msg, c)
-	c.activeMsgs.Store(job.ID, msg)
-	ch <- job
+	for {
 
-	fmt.Println("done!!!!!")
+		select {
+		case <-ctx.Done():
+			return nil, errors.New("time out")
+		case <-quit:
+			err := queue.Subscription.Unsubscribe()
+			if err != nil {
+				return nil, err
+			}
+			return &jobworker.ReceiveJobsOutput{
+				NoJob: false,
+			}, nil
+		default:
+			msg, err := queue.Subscription.Read()
+			if err != nil {
+				return nil, err
+			}
 
+			// TODO remove
+			printMsg(msg)
+
+			ch <- newJob(queue, msg, c)
+		}
+
+	}
 
 	return &jobworker.ReceiveJobsOutput{
-		NoJob:false,
+		NoJob: false,
 	}, nil
 }
 
+func isInvalidStompConn(err error) bool {
+	return err == stomp.ErrClosedUnexpectedly || err == stomp.ErrAlreadyClosed
+}
 
 func (c *Connector) EnqueueJob(ctx context.Context, input *jobworker.EnqueueJobInput, opts ...func(*jobworker.Option)) (*jobworker.EnqueueJobOutput, error) {
-	queue, err := c.resolveQueue(ctx, input.Queue)
-	if err != nil {
-		// TODO
-		return nil, err
-	}
+	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
 
-	var opt jobworker.Option
-	opt.ApplyOptions(opts...)
+		var opt jobworker.Option
+		opt.ApplyOptions(opts...)
 
-	var sendOpts []func(*frame.Frame) error
-	if opt.Metadata != nil {
-		for k, v := range opt.Metadata {
-			sendOpts = append(sendOpts, stomp.SendOpt.Header(k, v))
+		var sendOpts []func(*frame.Frame) error
+		if opt.Metadata != nil {
+			for k, v := range opt.Metadata {
+				sendOpts = append(sendOpts, stomp.SendOpt.Header(k, v))
+			}
 		}
-	}
-	sendOpts = append(sendOpts, stomp.SendOpt.Header("type", input.Payload.Class))
-	sendOpts = append(sendOpts, stomp.SendOpt.Header("persistent", "true"))
+		if c.setting.Persistent {
+			sendOpts = append(sendOpts, stomp.SendOpt.Header("persistent", "true"))
+		}
 
-	var contentType string
-	if v, ok := opt.Metadata[frame.ContentType]; ok {
-		contentType = v
-	}
+		var contentType string
+		if v, ok := opt.Metadata[frame.ContentType]; ok {
+			contentType = v
+		}
 
-	err = c.conn.Send(queue.Subscription.Destination(), contentType, []byte(input.Payload.Args), sendOpts...)
+		err := c.conn.Send(input.Queue, contentType, []byte(input.Payload.Args), sendOpts...)
+		if err != nil {
+			return err
+		}
+		return nil
+
+	}, func(err error) bool {
+		if !isInvalidStompConn(err) {
+			return false
+		}
+		c.conn, err = dial(c.setting.Network, c.setting.Addr, c.setting.Config, c.setting.Opts...)
+		if err != nil {
+			// add logging
+			return false
+		}
+		return true
+	})
 	if err != nil {
 		return nil, err
 	}
-
 	return &jobworker.EnqueueJobOutput{}, nil
 }
 
@@ -180,8 +247,9 @@ func (c *Connector) EnqueueJobBatch(ctx context.Context, input *jobworker.Enqueu
 					sendOpts = append(sendOpts, stomp.SendOpt.Header(k, v))
 				}
 			}
-			sendOpts = append(sendOpts, stomp.SendOpt.Header("type", v.Class))
-			sendOpts = append(sendOpts, stomp.SendOpt.Header("persistent", "true"))
+			if c.persistent {
+				sendOpts = append(sendOpts, stomp.SendOpt.Header("persistent", "true"))
+			}
 
 			var contentType string
 			if v, ok := opt.Metadata[frame.ContentType]; ok {
@@ -198,7 +266,6 @@ func (c *Connector) EnqueueJobBatch(ctx context.Context, input *jobworker.Enqueu
 
 	})
 
-
 	if err != nil {
 		return nil, err
 	}
@@ -214,9 +281,30 @@ func (c *Connector) EnqueueJobBatch(ctx context.Context, input *jobworker.Enqueu
 
 }
 
+func (c *Connector) CompleteJob(ctx context.Context, input *jobworker.CompleteJobInput, opts ...func(*jobworker.Option)) (*jobworker.CompleteJobOutput, error) {
+	msg := input.Job.XXX_RawMsgPtr.(*stomp.Message)
+	err := c.conn.Ack(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &jobworker.CompleteJobOutput{}, nil
+}
+
+func (c *Connector) FailJob(ctx context.Context, input *jobworker.FailJobInput, opts ...func(*jobworker.Option)) (*jobworker.FailJobOutput, error) {
+	msg := input.Job.XXX_RawMsgPtr.(*stomp.Message)
+	err := c.conn.Nack(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &jobworker.FailJobOutput{}, nil
+}
+
+func (c *Connector) Close() error {
+	_ = c.conn.Disconnect()
+}
+
 func withTransaction(conn *stomp.Conn, ope func(tx *stomp.Transaction) error) (err error) {
 	tx := conn.Begin()
-
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Abort()
@@ -229,36 +317,4 @@ func withTransaction(conn *stomp.Conn, ope func(tx *stomp.Transaction) error) (e
 	}()
 	err = ope(tx)
 	return
-}
-
-func (c *Connector) CompleteJob(ctx context.Context, input *jobworker.CompleteJobInput, opts ...func(*jobworker.Option)) (*jobworker.CompleteJobOutput, error) {
-	v, ok := c.activeMsgs.Load(input.Job.ID)
-	if !ok {
-		// TODO
-		return nil, nil
-	}
-	msg := v.(*stomp.Message)
-	err := c.conn.Ack(msg)
-	if err != nil {
-		// TODO
-	}
-	return nil, nil
-}
-
-func (c *Connector) FailJob(ctx context.Context, input *jobworker.FailJobInput, opts ...func(*jobworker.Option)) (*jobworker.FailJobOutput, error) {
-	v, ok := c.activeMsgs.Load(input.Job.ID)
-	if !ok {
-		// TODO
-		return nil, nil
-	}
-	msg := v.(*stomp.Message)
-	err := c.conn.Nack(msg)
-	if err != nil {
-		// TODO
-	}
-	return nil, nil
-}
-
-func (c *Connector) Close() error {
-	_ = c.conn.Disconnect()
 }
