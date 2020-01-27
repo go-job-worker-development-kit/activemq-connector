@@ -3,8 +3,11 @@ package activemq
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/vvatanabe/goretryer/exponential"
 
@@ -140,39 +143,75 @@ func printMsg(msg *stomp.Message) {
 	fmt.Println("# ----------")
 }
 
-func (c *Connector) ReceiveJobs(ctx context.Context, ch chan<- *jobworker.Job, quit <-chan struct{}, input *jobworker.ReceiveJobsInput, opts ...func(*jobworker.Option)) (*jobworker.ReceiveJobsOutput, error) {
+const (
+	subStateActive  = 0
+	subStateClosing = 1
+	subStateClosed  = 2
+)
+
+type subscription struct {
+	done  chan struct{}
+	queue chan *jobworker.Job
+	state int32
+}
+
+func (s *subscription) Active() bool {
+	return atomic.LoadInt32(&s.state) == subStateActive
+}
+
+func (s *subscription) Queue() chan *jobworker.Job {
+	return s.queue
+}
+
+var ErrCompletedSubscription = errors.New("subscription is unsubscribed")
+
+func (s *subscription) UnSubscribe() error {
+	if !atomic.CompareAndSwapInt32(&s.state, subStateActive, subStateClosing) {
+		return ErrCompletedSubscription
+	}
+	s.done <- struct{}{}
+	return nil
+}
+
+func (s *subscription) closeQueue() {
+	atomic.StoreInt32(&s.state, subStateClosed)
+	s.done <- struct{}{}
+}
+
+func (c *Connector) Subscribe(ctx context.Context, input *jobworker.SubscribeInput, opts ...func(*jobworker.Option)) (*jobworker.SubscribeOutput, error) {
 	queue, err := c.resolveQueue(ctx, input.Queue)
 	if err != nil {
 		return nil, err
 	}
+	var s subscription
+	go func(s *subscription) {
+		for {
 
-	for {
+			select {
+			case <-s.done:
+				err := queue.Subscription.Unsubscribe()
+				if err != nil {
+					// TODO
+					return
+				}
+			default:
+				msg, err := queue.Subscription.Read()
+				if err != nil {
+					// TODO
+					return
+				}
+				// TODO remove
+				printMsg(msg)
 
-		select {
-		case <-quit:
-			err := queue.Subscription.Unsubscribe()
-			if err != nil {
-				return nil, err
+				s.queue <- newJob(queue, msg, c)
 			}
-			return &jobworker.ReceiveJobsOutput{
-				NoJob: false,
-			}, nil
-		default:
-			msg, err := queue.Subscription.Read()
-			if err != nil {
-				return nil, err
-			}
 
-			// TODO remove
-			printMsg(msg)
-
-			ch <- newJob(queue, msg, c)
+			time.Sleep(input.Interval)
 		}
+	}(&s)
 
-	}
-
-	return &jobworker.ReceiveJobsOutput{
-		NoJob: false,
+	return &jobworker.SubscribeOutput{
+		Subscription: &s,
 	}, nil
 }
 
@@ -180,7 +219,7 @@ func isInvalidStompConn(err error) bool {
 	return err == stomp.ErrClosedUnexpectedly || err == stomp.ErrAlreadyClosed
 }
 
-func (c *Connector) EnqueueJob(ctx context.Context, input *jobworker.EnqueueJobInput, opts ...func(*jobworker.Option)) (*jobworker.EnqueueJobOutput, error) {
+func (c *Connector) Enqueue(ctx context.Context, input *jobworker.EnqueueInput, opts ...func(*jobworker.Option)) (*jobworker.EnqueueOutput, error) {
 	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
 
 		var opt jobworker.Option
@@ -221,10 +260,10 @@ func (c *Connector) EnqueueJob(ctx context.Context, input *jobworker.EnqueueJobI
 	if err != nil {
 		return nil, err
 	}
-	return &jobworker.EnqueueJobOutput{}, nil
+	return &jobworker.EnqueueOutput{}, nil
 }
 
-func (c *Connector) EnqueueJobBatch(ctx context.Context, input *jobworker.EnqueueJobBatchInput, opts ...func(*jobworker.Option)) (*jobworker.EnqueueJobBatchOutput, error) {
+func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBatchInput, opts ...func(*jobworker.Option)) (*jobworker.EnqueueBatchOutput, error) {
 	queue, err := c.resolveQueue(ctx, input.Queue)
 	if err != nil {
 		// TODO
@@ -271,7 +310,7 @@ func (c *Connector) EnqueueJobBatch(ctx context.Context, input *jobworker.Enqueu
 		ids = append(ids, id)
 	}
 
-	return &jobworker.EnqueueJobBatchOutput{
+	return &jobworker.EnqueueBatchOutput{
 		Successful: ids,
 	}, nil
 
