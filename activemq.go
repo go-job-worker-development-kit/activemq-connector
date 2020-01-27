@@ -3,7 +3,6 @@ package activemq
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -42,7 +41,6 @@ func Open(s *Setting) (*Connector, error) {
 		retryer: er,
 		conn:    conn,
 	}, nil
-
 }
 
 func dial(network string, addr string, config *tls.Config, opts ...func(*stomp.Conn) error) (*stomp.Conn, error) {
@@ -151,8 +149,6 @@ func (c *Connector) ReceiveJobs(ctx context.Context, ch chan<- *jobworker.Job, q
 	for {
 
 		select {
-		case <-ctx.Done():
-			return nil, errors.New("time out")
 		case <-quit:
 			err := queue.Subscription.Unsubscribe()
 			if err != nil {
@@ -247,7 +243,7 @@ func (c *Connector) EnqueueJobBatch(ctx context.Context, input *jobworker.Enqueu
 					sendOpts = append(sendOpts, stomp.SendOpt.Header(k, v))
 				}
 			}
-			if c.persistent {
+			if c.setting.Persistent {
 				sendOpts = append(sendOpts, stomp.SendOpt.Header("persistent", "true"))
 			}
 
@@ -304,7 +300,10 @@ func (c *Connector) Close() error {
 }
 
 func withTransaction(conn *stomp.Conn, ope func(tx *stomp.Transaction) error) (err error) {
-	tx := conn.Begin()
+	tx, err := conn.BeginWithError()
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Abort()
