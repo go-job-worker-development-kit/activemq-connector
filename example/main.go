@@ -19,7 +19,7 @@ func main() {
 	username := os.Getenv("ACTIVEMQ_USERNAME")
 	password := os.Getenv("ACTIVEMQ_PASSWORD")
 
-	s := activemq.Setting{
+	s := &activemq.Setting{
 		Network: "tcp",
 		Addr:    addr,
 		Config:  &tls.Config{},
@@ -32,6 +32,10 @@ func main() {
 	}
 
 	conn, err := activemq.Open(s)
+	if err != nil {
+		fmt.Println("open conn error:", err)
+		return
+	}
 	defer func() {
 		err := conn.Close()
 		if err != nil {
@@ -41,16 +45,10 @@ func main() {
 
 	go func() {
 		for {
-
-			_, err := conn.EnqueueJob(context.Background(), &jobworker.EnqueueJobInput{
-				Queue: "test",
-				Payload: &jobworker.Payload{
-					Class:           "hello",
-					Args:            "hello: " + uuid.NewV4().String(),
-					DelaySeconds:    0,
-					DeduplicationID: "",
-					GroupID:         "",
-				}})
+			_, err := conn.Enqueue(context.Background(), &jobworker.EnqueueInput{
+				Queue:   "test",
+				Payload: "hello: " + uuid.NewV4().String(),
+			})
 			if err != nil {
 				fmt.Println("could not enqueue a job", err)
 			}
@@ -59,22 +57,25 @@ func main() {
 		}
 	}()
 
-	jobChan := make(chan *jobworker.Job)
 	done := make(chan struct{})
+
 	go func() {
-		_, err = conn.ReceiveJobs(context.Background(), jobChan, done, &jobworker.ReceiveJobsInput{Queue: "test"})
+		out, err := conn.Subscribe(context.Background(), &jobworker.SubscribeInput{Queue: "test"})
 		if err != nil {
 			fmt.Println("receive jobs error:", err)
 		}
+		for job := range out.Subscription.Queue() {
+			printJob(job)
+			err := job.Complete(context.Background())
+			if err != nil {
+				fmt.Println("complete jobs error:", err)
+			}
+		}
+		close(done)
 	}()
 
-	for job := range jobChan {
-		printJob(job)
-		err := job.Complete(context.Background())
-		if err != nil {
-			fmt.Println("complete jobs error:", err)
-		}
-	}
+	<-done
+
 }
 
 func printJob(job *jobworker.Job) {

@@ -10,3 +10,5 @@ require (
 	github.com/vvatanabe/goretryer v0.1.0
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 )
+
+replace github.com/go-job-worker-development-kit/jobworker v0.1.0 => /home/vvatanabe/go/src/github.com/go-job-worker-development-kit/jobworker

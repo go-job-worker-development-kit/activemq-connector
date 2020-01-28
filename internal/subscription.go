@@ -2,7 +2,6 @@ package internal
 
 import (
 	"errors"
-	"fmt"
 	"sync/atomic"
 
 	"github.com/go-job-worker-development-kit/jobworker"
@@ -15,9 +14,18 @@ const (
 	subStateClosed  = 2
 )
 
+func NewSubscription(name string,
+	raw *stomp.Subscription) *Subscription {
+	return &Subscription{
+		name:  name,
+		raw:   raw,
+		queue: make(chan *jobworker.Job),
+	}
+}
+
 type Subscription struct {
-	Name  string
-	Raw   *stomp.Subscription
+	name  string
+	raw   *stomp.Subscription
 	queue chan *jobworker.Job
 	state int32
 }
@@ -37,15 +45,12 @@ func (s *Subscription) UnSubscribe() error {
 		return ErrCompletedSubscription
 	}
 	// TODO error handling
-	return s.Raw.Unsubscribe()
+	return s.raw.Unsubscribe()
 }
 
 func (s *Subscription) ReadLoop(conn jobworker.Connector) {
-	if s.queue == nil {
-		s.queue = make(chan *jobworker.Job)
-	}
 	for {
-		msg, ok := <-s.Raw.C
+		msg, ok := <-s.raw.C
 		if !ok {
 			state := atomic.LoadInt32(&s.state)
 			if state == subStateActive || state == subStateClosing {
@@ -53,9 +58,7 @@ func (s *Subscription) ReadLoop(conn jobworker.Connector) {
 			}
 			return
 		}
-		// TODO remove
-		printMsg(msg)
-		s.queue <- newJob(s.Name, msg, conn)
+		s.queue <- newJob(s.name, msg, conn)
 	}
 }
 
@@ -66,7 +69,7 @@ func (s *Subscription) closeQueue() {
 
 func newJob(queue string, msg *stomp.Message, conn jobworker.Connector) *jobworker.Job {
 	metadata := make(map[string]string, msg.Header.Len())
-	for i := 0; i < len(metadata); i++ {
+	for i := 0; i < msg.Header.Len(); i++ {
 		k, v := msg.Header.GetAt(i)
 		metadata[k] = v
 	}
@@ -78,27 +81,4 @@ func newJob(queue string, msg *stomp.Message, conn jobworker.Connector) *jobwork
 		msg,
 	)
 	return job
-}
-
-func printMsg(msg *stomp.Message) {
-	fmt.Println("# ----------")
-
-	for i := 0; i < msg.Header.Len(); i++ {
-		k, v := msg.Header.GetAt(i)
-		fmt.Println(k, ":", v)
-	}
-
-	fmt.Println("# ----------")
-
-	fmt.Println("ContentType :", msg.ContentType)
-
-	fmt.Println("# ----------")
-
-	fmt.Println("Body :", string(msg.Body))
-
-	fmt.Println("# ----------")
-
-	fmt.Println("Destination :", msg.Destination)
-
-	fmt.Println("# ----------")
 }
