@@ -4,19 +4,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-job-worker-development-kit/jobworker"
-
 	"github.com/go-stomp/stomp"
 )
 
 type ConnProvider struct {
-	conn       *stomp.Conn
-	mu         sync.RWMutex
-	loggerFunc func(...interface{})
-}
-
-func (p *ConnProvider) SetLoggerFunc(f jobworker.LoggerFunc) {
-	p.loggerFunc = f
+	conn *stomp.Conn
+	mu   sync.RWMutex
 }
 
 func (p *ConnProvider) Register(conn *stomp.Conn) {
@@ -31,7 +24,7 @@ func (p *ConnProvider) Conn() *stomp.Conn {
 	return p.conn
 }
 
-func (p *ConnProvider) Replace(newConn *stomp.Conn) {
+func (p *ConnProvider) Replace(newConn *stomp.Conn, disconnectDelay time.Duration) {
 	conn := p.conn
 
 	p.mu.Lock()
@@ -39,10 +32,7 @@ func (p *ConnProvider) Replace(newConn *stomp.Conn) {
 	p.mu.Unlock()
 
 	go func() {
-		time.Sleep(10 * time.Second)
-		err := conn.Disconnect()
-		if err != nil && p.loggerFunc != nil {
-			p.loggerFunc("conn disconnect error:", err)
-		}
+		time.Sleep(disconnectDelay)
+		_ = conn.Disconnect()
 	}()
 }

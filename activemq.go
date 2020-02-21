@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"sync"
+	"time"
 
 	"github.com/vvatanabe/goretryer/exponential"
 
@@ -13,7 +14,98 @@ import (
 	"github.com/go-stomp/stomp/frame"
 )
 
-const connName = "activemq"
+const (
+	connName = "activemq"
+	// pkgName  = "activemq-connector"
+	// logPrefix = "[" + pkgName + "]"
+
+	connAttributeNameNetwork       = "Network"
+	connAttributeNameAddr          = "Addr"
+	connAttributeNameInSecure      = "InSecure"
+	connAttributeNameLogin         = "Login"
+	connAttributeNamePasscode      = "Passcode"
+	connAttributeNamePersistent    = "Persistent"
+	connAttributeNameNumMaxRetries = "NumMaxRetries"
+
+	defaultNumMaxRetries = 3
+)
+
+func init() {
+	jobworker.Register(connName, &Provider{})
+}
+
+type Provider struct {
+}
+
+func (Provider) Open(attrs map[string]interface{}) (jobworker.Connector, error) {
+
+	values := connAttrsToValues(attrs)
+	values.applyDefaultValues()
+
+	var cfg *tls.Config
+	if !values.insecure {
+		cfg = &tls.Config{}
+	}
+
+	return Open(&Setting{
+		Network: values.network,
+		Addr:    values.addr,
+		Config:  cfg,
+		Opts: []func(*stomp.Conn) error{
+			stomp.ConnOpt.Login(values.login, values.passcode),
+		},
+		AckMode:       stomp.AckClient,
+		Persistent:    values.persistent,
+		NumMaxRetries: *values.numMaxRetries,
+	})
+}
+
+type values struct {
+	network       string
+	addr          string
+	insecure      bool
+	login         string
+	passcode      string
+	persistent    bool
+	numMaxRetries *int
+}
+
+func (v *values) applyDefaultValues() {
+	if v.numMaxRetries == nil {
+		i := defaultNumMaxRetries
+		v.numMaxRetries = &i
+	}
+}
+
+func connAttrsToValues(attrs map[string]interface{}) *values {
+	var values values
+	for k, v := range attrs {
+		switch k {
+		case connAttributeNameNetwork:
+			s := v.(string)
+			values.network = s
+		case connAttributeNameAddr:
+			s := v.(string)
+			values.addr = s
+		case connAttributeNameInSecure:
+			s := v.(bool)
+			values.insecure = s
+		case connAttributeNameLogin:
+			s := v.(string)
+			values.login = s
+		case connAttributeNamePasscode:
+			s := v.(string)
+			values.passcode = s
+		case connAttributeNamePersistent:
+			s := v.(bool)
+			values.persistent = s
+		case connAttributeNameNumMaxRetries:
+			i := v.(int)
+			values.numMaxRetries = &i
+		}
+	}
+	return &values
+}
 
 type Setting struct {
 	Network       string
@@ -23,7 +115,6 @@ type Setting struct {
 	AckMode       stomp.AckMode
 	Persistent    bool
 	NumMaxRetries int
-	LoggerFunc    jobworker.LoggerFunc
 }
 
 func Open(s *Setting) (*Connector, error) {
@@ -37,7 +128,6 @@ func Open(s *Setting) (*Connector, error) {
 	}
 
 	var provider internal.ConnProvider
-	provider.SetLoggerFunc(s.LoggerFunc)
 	provider.Register(conn)
 
 	return &Connector{
@@ -86,29 +176,11 @@ type Connector struct {
 	mu sync.Mutex
 }
 
-func (c *Connector) SetLoggerFunc(f jobworker.LoggerFunc) {
-	c.loggerFunc = f
-}
-
-func (c *Connector) GetName() string {
+func (c *Connector) Name() string {
 	return c.name
 }
 
-func (c *Connector) resolveQueue(ctx context.Context, name string) (*internal.Queue, error) {
-	queue, ok := c.name2Queue.Load(name)
-	if !ok || queue == nil {
-		s, err := c.provider.Conn().Subscribe(name, c.setting.AckMode)
-		if err != nil {
-			return nil, err
-		}
-		queue = &internal.Queue{Name: name, Subscription: s}
-		c.name2Queue.Store(name, queue)
-	}
-
-	return queue.(*internal.Queue), nil
-}
-
-func (c *Connector) Subscribe(ctx context.Context, input *jobworker.SubscribeInput, opts ...func(*jobworker.Option)) (*jobworker.SubscribeOutput, error) {
+func (c *Connector) Subscribe(ctx context.Context, input *jobworker.SubscribeInput) (*jobworker.SubscribeOutput, error) {
 
 	var sub *internal.Subscription
 	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
@@ -146,14 +218,11 @@ func isInvalidStompConn(err error) bool {
 	return err == stomp.ErrClosedUnexpectedly || err == stomp.ErrAlreadyClosed
 }
 
-func (c *Connector) Enqueue(ctx context.Context, input *jobworker.EnqueueInput, opts ...func(*jobworker.Option)) (*jobworker.EnqueueOutput, error) {
-
-	var opt jobworker.Option
-	opt.ApplyOptions(opts...)
+func (c *Connector) Enqueue(ctx context.Context, input *jobworker.EnqueueInput) (*jobworker.EnqueueOutput, error) {
 
 	var sendOpts []func(*frame.Frame) error
-	if opt.Metadata != nil {
-		for k, v := range opt.Metadata {
+	if input.Metadata != nil {
+		for k, v := range input.Metadata {
 			sendOpts = append(sendOpts, stomp.SendOpt.Header(k, v))
 		}
 	}
@@ -162,7 +231,7 @@ func (c *Connector) Enqueue(ctx context.Context, input *jobworker.EnqueueInput, 
 	}
 
 	var contentType string
-	if v, ok := opt.Metadata[frame.ContentType]; ok {
+	if v, ok := input.Metadata[frame.ContentType]; ok {
 		contentType = v
 	}
 
@@ -196,10 +265,7 @@ func (c *Connector) Enqueue(ctx context.Context, input *jobworker.EnqueueInput, 
 	return &jobworker.EnqueueOutput{}, nil
 }
 
-func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBatchInput, opts ...func(*jobworker.Option)) (*jobworker.EnqueueBatchOutput, error) {
-
-	var opt jobworker.Option
-	opt.ApplyOptions(opts...)
+func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBatchInput) (*jobworker.EnqueueBatchOutput, error) {
 
 	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
 
@@ -211,10 +277,10 @@ func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBa
 
 		return withTransaction(c.provider.Conn(), func(tx *stomp.Transaction) error {
 
-			for _, v := range input.Id2Payload {
+			for _, v := range input.Id2Content {
 				var sendOpts []func(*frame.Frame) error
-				if opt.Metadata != nil {
-					for k, v := range opt.Metadata {
+				if input.Metadata != nil {
+					for k, v := range input.Metadata {
 						sendOpts = append(sendOpts, stomp.SendOpt.Header(k, v))
 					}
 				}
@@ -223,7 +289,7 @@ func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBa
 				}
 
 				var contentType string
-				if v, ok := opt.Metadata[frame.ContentType]; ok {
+				if v, ok := input.Metadata[frame.ContentType]; ok {
 					contentType = v
 				}
 
@@ -253,7 +319,7 @@ func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBa
 	}
 
 	var ids []string
-	for id := range input.Id2Payload {
+	for id := range input.Id2Content {
 		ids = append(ids, id)
 	}
 
@@ -263,9 +329,9 @@ func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBa
 
 }
 
-func (c *Connector) CompleteJob(ctx context.Context, input *jobworker.CompleteJobInput, opts ...func(*jobworker.Option)) (*jobworker.CompleteJobOutput, error) {
+func (c *Connector) CompleteJob(ctx context.Context, input *jobworker.CompleteJobInput) (*jobworker.CompleteJobOutput, error) {
 	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
-		msg := input.Job.XXX_RawMsgPtr.(*stomp.Message)
+		msg := input.Job.Payload().Raw.(*stomp.Message)
 		return c.provider.Conn().Ack(msg)
 	}, func(err error) bool {
 		if !isInvalidStompConn(err) {
@@ -283,9 +349,9 @@ func (c *Connector) CompleteJob(ctx context.Context, input *jobworker.CompleteJo
 	return &jobworker.CompleteJobOutput{}, nil
 }
 
-func (c *Connector) FailJob(ctx context.Context, input *jobworker.FailJobInput, opts ...func(*jobworker.Option)) (*jobworker.FailJobOutput, error) {
+func (c *Connector) FailJob(ctx context.Context, input *jobworker.FailJobInput) (*jobworker.FailJobOutput, error) {
 	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
-		msg := input.Job.XXX_RawMsgPtr.(*stomp.Message)
+		msg := input.Job.Payload().Raw.(*stomp.Message)
 		return c.provider.Conn().Nack(msg)
 	}, func(err error) bool {
 		if !isInvalidStompConn(err) {
@@ -307,14 +373,32 @@ func (c *Connector) Close() error {
 	return c.provider.Conn().Disconnect()
 }
 
+func (c *Connector) SetLoggerFunc(f jobworker.LoggerFunc) {
+	c.loggerFunc = f
+}
+
 func (c *Connector) reconnect() error {
 	newConn, err := dial(c.setting.Network, c.setting.Addr, c.setting.Config, c.setting.Opts...)
 	if err != nil {
 		// TODO add logging
 		return err
 	}
-	c.provider.Replace(newConn)
+	c.provider.Replace(newConn, 2*time.Second)
 	return nil
+}
+
+func (c *Connector) resolveQueue(ctx context.Context, name string) (*internal.Queue, error) {
+	queue, ok := c.name2Queue.Load(name)
+	if !ok || queue == nil {
+		s, err := c.provider.Conn().Subscribe(name, c.setting.AckMode)
+		if err != nil {
+			return nil, err
+		}
+		queue = &internal.Queue{Name: name, Subscription: s}
+		c.name2Queue.Store(name, queue)
+	}
+
+	return queue.(*internal.Queue), nil
 }
 
 func withTransaction(conn *stomp.Conn, ope func(tx *stomp.Transaction) error) (err error) {

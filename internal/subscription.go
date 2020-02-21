@@ -68,17 +68,19 @@ func (s *Subscription) closeQueue() {
 }
 
 func newJob(queue string, msg *stomp.Message, conn jobworker.Connector) *jobworker.Job {
+	var payload jobworker.Payload
+	payload.Content = string(msg.Body)
+	payload.Metadata = newMetadata(msg)
+	payload.CustomAttribute = make(map[string]*jobworker.CustomAttribute)
+	payload.Raw = msg
+	return jobworker.NewJob(conn, queue, &payload)
+}
+
+func newMetadata(msg *stomp.Message) map[string]string {
 	metadata := make(map[string]string, msg.Header.Len())
 	for i := 0; i < msg.Header.Len(); i++ {
 		k, v := msg.Header.GetAt(i)
 		metadata[k] = v
 	}
-	job := jobworker.NewJob(
-		queue,
-		string(msg.Body),
-		metadata,
-		conn,
-		msg,
-	)
-	return job
+	return metadata
 }
