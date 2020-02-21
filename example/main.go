@@ -66,7 +66,9 @@ func main() {
 		}
 		for job := range out.Subscription.Queue() {
 			printJob(job)
-			err := job.Complete(context.Background())
+			_, err := conn.CompleteJob(context.Background(), &jobworker.CompleteJobInput{
+				Job: job,
+			})
 			if err != nil {
 				fmt.Println("complete jobs error:", err)
 			}
@@ -80,12 +82,13 @@ func main() {
 
 func printJob(job *jobworker.Job) {
 	fmt.Println("# ----------")
-	for k, v := range job.Metadata {
+	payload := job.Payload()
+	for k, v := range payload.Metadata {
 		fmt.Println(k, ":", v)
 	}
 	fmt.Println("# ----------")
-	fmt.Println("Body :", job.Args)
+	fmt.Println("Content :", payload.Content)
 	fmt.Println("# ----------")
-	fmt.Println("Queue :", job.Queue)
+	fmt.Println("Queue :", job.QueueName())
 	fmt.Println("# ----------")
 }
