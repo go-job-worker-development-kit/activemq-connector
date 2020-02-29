@@ -8,8 +8,8 @@ import (
 
 	"github.com/vvatanabe/goretryer/exponential"
 
-	"github.com/go-job-worker-development-kit/activemq-connector/internal"
-	"github.com/go-job-worker-development-kit/jobworker"
+	"github.com/go-jwdk/activemq-connector/internal"
+	"github.com/go-jwdk/jobworker"
 	"github.com/go-stomp/stomp"
 	"github.com/go-stomp/stomp/frame"
 )

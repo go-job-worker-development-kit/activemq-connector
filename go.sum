@@ -1,5 +1,5 @@
-github.com/go-job-worker-development-kit/jobworker v0.1.0 h1:c2p7CwDEeZ3VjNeP3OJpnIUMgSqYYMW/ludTiQB55Hc=
-github.com/go-job-worker-development-kit/jobworker v0.1.0/go.mod h1:qao1ZgIzpcD+Yt8ZAsNqecjJ+xFm7ZzUftWa89Ep1Mc=
+github.com/go-jwdk/jobworker v0.1.0 h1:c2p7CwDEeZ3VjNeP3OJpnIUMgSqYYMW/ludTiQB55Hc=
+github.com/go-jwdk/jobworker v0.1.0/go.mod h1:qao1ZgIzpcD+Yt8ZAsNqecjJ+xFm7ZzUftWa89Ep1Mc=
 github.com/go-stomp/stomp v2.0.3+incompatible h1:B8gYzgV3rXQRHoK8itI9RZDyimEBAwKbJjfoRKpdxwc=
 github.com/go-stomp/stomp v2.0.3+incompatible/go.mod h1:VqCtqNZv1226A1/79yh+rMiFUcfY3R109np+7ke4n0c=
 github.com/kr/pretty v0.2.0 h1:s5hAObm+yFO5uHYt5dYjxi2rXrsnmRpJx4OYvIWUaQs=

@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-job-worker-development-kit/activemq-connector"
-	"github.com/go-job-worker-development-kit/jobworker"
+	"github.com/go-jwdk/activemq-connector"
+	"github.com/go-jwdk/jobworker"
 	"github.com/go-stomp/stomp"
 	uuid "github.com/satori/go.uuid"
 )

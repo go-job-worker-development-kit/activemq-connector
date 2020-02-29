@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/go-job-worker-development-kit/jobworker"
+	"github.com/go-jwdk/jobworker"
 	"github.com/go-stomp/stomp"
 )
 
