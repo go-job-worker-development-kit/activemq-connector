@@ -331,7 +331,7 @@ func (c *Connector) EnqueueBatch(ctx context.Context, input *jobworker.EnqueueBa
 
 func (c *Connector) CompleteJob(ctx context.Context, input *jobworker.CompleteJobInput) (*jobworker.CompleteJobOutput, error) {
 	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
-		msg := input.Job.Payload().Raw.(*stomp.Message)
+		msg := input.Job.Raw.(*stomp.Message)
 		return c.provider.Conn().Ack(msg)
 	}, func(err error) bool {
 		if !isInvalidStompConn(err) {
@@ -351,7 +351,7 @@ func (c *Connector) CompleteJob(ctx context.Context, input *jobworker.CompleteJo
 
 func (c *Connector) FailJob(ctx context.Context, input *jobworker.FailJobInput) (*jobworker.FailJobOutput, error) {
 	_, err := c.retryer.Do(ctx, func(ctx context.Context) error {
-		msg := input.Job.Payload().Raw.(*stomp.Message)
+		msg := input.Job.Raw.(*stomp.Message)
 		return c.provider.Conn().Nack(msg)
 	}, func(err error) bool {
 		if !isInvalidStompConn(err) {

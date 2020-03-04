@@ -82,13 +82,12 @@ func main() {
 
 func printJob(job *jobworker.Job) {
 	fmt.Println("# ----------")
-	payload := job.Payload()
-	for k, v := range payload.Metadata {
+	for k, v := range job.Metadata {
 		fmt.Println(k, ":", v)
 	}
 	fmt.Println("# ----------")
-	fmt.Println("Content :", payload.Content)
+	fmt.Println("Content :", job.Content)
 	fmt.Println("# ----------")
-	fmt.Println("Queue :", job.QueueName())
+	fmt.Println("Queue :", job.QueueName)
 	fmt.Println("# ----------")
 }

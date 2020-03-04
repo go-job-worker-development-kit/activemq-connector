@@ -67,13 +67,15 @@ func (s *Subscription) closeQueue() {
 	close(s.queue)
 }
 
-func newJob(queue string, msg *stomp.Message, conn jobworker.Connector) *jobworker.Job {
-	var payload jobworker.Payload
-	payload.Content = string(msg.Body)
-	payload.Metadata = newMetadata(msg)
-	payload.CustomAttribute = make(map[string]*jobworker.CustomAttribute)
-	payload.Raw = msg
-	return jobworker.NewJob(conn, queue, &payload)
+func newJob(queueName string, msg *stomp.Message, conn jobworker.Connector) *jobworker.Job {
+	return &jobworker.Job{
+		Conn:            conn,
+		QueueName:       queueName,
+		Content:         string(msg.Body),
+		Metadata:        newMetadata(msg),
+		CustomAttribute: make(map[string]*jobworker.CustomAttribute),
+		Raw:             msg,
+	}
 }
 
 func newMetadata(msg *stomp.Message) map[string]string {
