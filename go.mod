@@ -3,7 +3,7 @@ module github.com/go-jwdk/activemq-connector
 go 1.13
 
 require (
-	github.com/go-jwdk/jobworker v0.1.0
+	github.com/go-jwdk/jobworker v0.2.0
 	github.com/go-stomp/stomp v2.0.3+incompatible
 	github.com/kr/pretty v0.2.0 // indirect
 	github.com/satori/go.uuid v1.2.0
